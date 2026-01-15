@@ -40,67 +40,90 @@ parse_dates = [
 #     parse_dates=parse_dates
 # )
 
-# In[21]:
 
+def lookup_etl(engine, chunksize):
+    lookupdtype = {
+        "LocationID": "Int64",
+        "Borough": "string",
+        "Zone": "string",
+        "service_zone": "string",
+    }
+    # Logic to switch between CSV and Parquet
+    # Note: Many modern NYC Taxi datasets are now provided as .parquet
+    
+    # We can try to detect which one to use or just set it here
+    url = "https://github.com/DataTalksClub/nyc-tlc-data/releases/download/misc/taxi_zone_lookup.csv"
+
+    # --- INGESTION LOGIC ---
+    # CSV uses the iterator approach you already had
+    df_iter = pd.read_csv(url, dtype=lookupdtype, iterator=True, chunksize=chunksize)
+    print("extracting and transforming lookup dataset...")
+    first = True
+    for df_chunk in tqdm(df_iter):
+        if_exists_val = 'replace' if first else 'append'
+        df_chunk.to_sql(name='taxi_zone_lookup', con=engine, if_exists=if_exists_val, index=False)
+        first = False
+
+# In[21]:
 @click.command()
-@click.option('--pg-user', default='root', help='PostgreSQL username')
-@click.option('--pg-pass', default='root', help='PostgreSQL password')
-@click.option('--pg-host', default='localhost', help='PostgreSQL host')
-@click.option('--pg-port', default='5432', help='PostgreSQL port')
-@click.option('--pg-db', default='ny_taxi', help='PostgreSQL database name')
-@click.option('--year', default=2021, type=int, help='Year of the data')
-@click.option('--month', default=1, type=int, help='Month of the data')
-@click.option('--chunksize', default=100000, type=int, help='Chunk size for ingestion')
-@click.option('--target-table', default='yellow_taxi_data', help='Target table name')
+@click.option('--pg-user', default='root')
+@click.option('--pg-pass', default='root')
+@click.option('--pg-host', default='localhost')
+@click.option('--pg-port', default='5432')
+@click.option('--pg-db', default='ny_taxi')
+@click.option('--year', default=2021, type=int)
+@click.option('--month', default=1, type=int)
+@click.option('--chunksize', default=100000, type=int)
+@click.option('--target-table', default='yellow_taxi_data')
 def run(pg_user, pg_pass, pg_host, pg_port, pg_db, year, month, chunksize, target_table):
-    # year = 2021
-    # month = 1
-# 
-#     pg_user = 'root'
-#     pg_pass = 'root'
-#     pg_host = 'localhost'
-#     pg_port = '5432'
-#     pg_db = 'ny_taxi'
-    # chunksize=100000
-    # target_table = 'yellow_taxi_data'
-    prefix = 'https://github.com/DataTalksClub/nyc-tlc-data/releases/download/yellow/'
-    url = f'{prefix}/yellow_tripdata_{year}-{month:02d}.csv.gz'
+    
+    # Logic to switch between CSV and Parquet
+    # Note: Many modern NYC Taxi datasets are now provided as .parquet
+    # prefix = 'https://github.com/DataTalksClub/nyc-tlc-data/releases/download/yellow'
+    prefix = "https://d37ci6vzurychx.cloudfront.net/trip-data"
+    
+    # We can try to detect which one to use or just set it here
+    # file_name = f'yellow_tripdata_{year}-{month:02d}.parquet' 
+    file_name = f'green_tripdata_{year}-{month:02d}.parquet' 
+    url = f'{prefix}/{file_name}'
+    print(url)
 
     engine = create_engine(f'postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}')
-
-
-    df_iter = pd.read_csv(
-        url,
-        dtype=dtype,
-        parse_dates=parse_dates,
-        iterator=True,
-        chunksize=chunksize,
-    )
-
-    first = True
     
-    # prefer not to use this
-    # df = next(df_iter)
+    if (target_table == 'taxi_zone_lookup'):
+        lookup_etl(engine=engine, chunksize=chunksize)
+    else:
+        # --- INGESTION LOGIC ---
+        if url.endswith('.csv') or url.endswith('.csv.gz'):
+            # CSV uses the iterator approach you already had
+            df_iter = pd.read_csv(url, dtype=dtype, parse_dates=parse_dates, iterator=True, chunksize=chunksize)
+            
+            first = True
+            for df_chunk in tqdm(df_iter):
+                if_exists_val = 'replace' if first else 'append'
+                df_chunk.to_sql(name=target_table, con=engine, if_exists=if_exists_val, index=False)
+                first = False
 
-    # tqdm is progress bar lib
-    # insert data by sep chuncks
-    for df_chunk in tqdm(df_iter):
-        if first:
-            df_chunk.head(0).to_sql(
-                name=target_table, 
-                con=engine, 
-                # what if data already exist 
-                # replace = drop and reinsert
-                # append = append
-                if_exists='replace')
-            first = False
-        df_chunk.to_sql(
-            name=target_table, 
-            con=engine, 
-            if_exists='append')
+        elif url.endswith('.parquet'):
+            # Parquet doesn't support chunksize in read_parquet easily. 
+            # For a learning project, reading it all at once is usually okay for monthly files (~100MB).
+            print("Reading Parquet file...")
+            df = pd.read_parquet(url)
+            # print(len(df))
+            # count_max1_mile = (df['trip_distance'] <= 1).sum()
+            # print(count_max1_mile)
+            # We manually chunk the dataframe to keep the progress bar and memory safe
+            # stop etl
+            print(f"Ingesting {len(df)} rows in chunks of {chunksize}...")
+            for i in tqdm(range(0, len(df), chunksize)):
+                df_chunk = df.iloc[i:i+chunksize]
+                if_exists_val = 'replace' if i == 0 else 'append'
+                df_chunk.to_sql(name=target_table, con=engine, if_exists=if_exists_val, index=False)
+    
 
 if __name__ == '__main__':
     run()
 
 
+# %%
 
